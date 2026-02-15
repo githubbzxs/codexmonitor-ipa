@@ -84,7 +84,7 @@ jobs:
           xcodebuild \
             -project "${PROJECT_PATH}" \
             -scheme "${SCHEME}" \
-            -configuration Release \
+            -configuration release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             -derivedDataPath build/DerivedData \

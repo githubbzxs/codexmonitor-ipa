@@ -1,0 +1,128 @@
+name: 构建未签名IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: 上游仓库（格式 owner/repo）
+        required: true
+        default: Dimillian/CodexMonitor
+      upstream_ref:
+        description: 上游分支或标签
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - name: 检出当前仓库
+        uses: actions/checkout@v4
+
+      - name: 克隆上游源码
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch "${{ github.event.inputs.upstream_ref }}" \
+            "https://github.com/${{ github.event.inputs.upstream_repo }}.git" source
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: 安装 Rust 工具链（iOS targets）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: 安装依赖
+        working-directory: source
+        run: npm ci
+
+      - name: 准备 iOS 工程与前端资源
+        working-directory: source
+        run: |
+          set -euo pipefail
+          if [ ! -d "src-tauri/gen/apple" ]; then
+            npm run tauri -- ios init --ci
+          fi
+          npm run build
+          rm -rf src-tauri/gen/apple/assets
+          mkdir -p src-tauri/gen/apple/assets
+          cp -R dist/. src-tauri/gen/apple/assets/
+
+      - name: 无签名构建并封装 unsigned.ipa
+        working-directory: source
+        run: |
+          set -euo pipefail
+
+          PROJECT_PATH="$(find src-tauri/gen/apple -maxdepth 2 -name '*.xcodeproj' | head -n 1)"
+          if [ -z "${PROJECT_PATH}" ]; then
+            echo "未找到 xcodeproj。"
+            exit 1
+          fi
+
+          SCHEME="$(xcodebuild -list -project "${PROJECT_PATH}" | awk '/Schemes:/ {flag=1; next} flag && NF {print; exit}' | xargs)"
+          if [ -z "${SCHEME}" ]; then
+            echo "未找到可用 Scheme。"
+            xcodebuild -list -project "${PROJECT_PATH}"
+            exit 1
+          fi
+
+          xcodebuild \
+            -project "${PROJECT_PATH}" \
+            -scheme "${SCHEME}" \
+            -configuration release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            clean build | tee build/xcodebuild.log
+
+          APP_PATH="$(find build/DerivedData/Build/Products -maxdepth 2 -name '*.app' -type d | head -n 1)"
+          if [ -z "${APP_PATH}" ]; then
+            echo "未找到 .app 产物。"
+            tail -n 200 build/xcodebuild.log || true
+            exit 1
+          fi
+
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "${APP_PATH}" build/Payload/
+          (
+            cd build
+            /usr/bin/zip -qry unsigned.ipa Payload
+            shasum -a 256 unsigned.ipa > unsigned.ipa.sha256
+          )
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexmonitor-unsigned-ipa
+          path: |
+            source/build/unsigned.ipa
+            source/build/unsigned.ipa.sha256
+          if-no-files-found: error
+
+      - name: 输出摘要
+        run: |
+          {
+            echo "## 构建完成"
+            echo ""
+            echo "- 产物：\`codexmonitor-unsigned-ipa\`"
+            echo "- 文件：\`unsigned.ipa\`、\`unsigned.ipa.sha256\`"
+            echo "- 说明：这是未签名 IPA，需要在你的 Windows 上用 Sideloadly 重签后安装。"
+          } >> "$GITHUB_STEP_SUMMARY"

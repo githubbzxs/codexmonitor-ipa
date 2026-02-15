@@ -1,0 +1,89 @@
+name: 按项目官方流程构建 IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: 上游仓库（格式 owner/repo）
+        required: true
+        default: Dimillian/CodexMonitor
+      upstream_ref:
+        description: 上游分支或标签
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa-official:
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - name: 检出当前仓库
+        uses: actions/checkout@v4
+
+      - name: 克隆上游源码
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch "${{ github.event.inputs.upstream_ref }}" \
+            "https://github.com/${{ github.event.inputs.upstream_repo }}.git" source
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: 安装 Rust 工具链（iOS targets）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - name: 安装依赖
+        working-directory: source
+        run: npm ci
+
+      - name: 生成 iOS 工程
+        working-directory: source
+        run: |
+          set -euo pipefail
+          if [ ! -d "src-tauri/gen/apple" ]; then
+            npm run tauri -- ios init --ci
+          fi
+
+      - name: 按项目官方命令构建 IPA
+        working-directory: source
+        run: |
+          set -euo pipefail
+          BUILD_NUMBER="$(date +%s)"
+          npm run tauri -- ios build --target aarch64 --export-method app-store-connect --build-number "$BUILD_NUMBER" --ci
+
+          IPA_PATH="src-tauri/gen/apple/build/arm64/Codex Monitor.ipa"
+          if [ ! -f "$IPA_PATH" ]; then
+            echo "未找到 IPA：$IPA_PATH"
+            exit 1
+          fi
+
+          shasum -a 256 "$IPA_PATH" > "src-tauri/gen/apple/build/arm64/Codex Monitor.ipa.sha256"
+
+      - name: 上传 IPA 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexmonitor-ipa-official
+          path: |
+            source/src-tauri/gen/apple/build/arm64/Codex Monitor.ipa
+            source/src-tauri/gen/apple/build/arm64/Codex Monitor.ipa.sha256
+          if-no-files-found: error
+
+      - name: 输出结果摘要
+        run: |
+          {
+            echo "## 构建完成"
+            echo ""
+            echo "- 产物：\`codexmonitor-ipa-official\`"
+            echo "- 文件：\`Codex Monitor.ipa\`、\`Codex Monitor.ipa.sha256\`"
+            echo "- 构建方式：CodexMonitor 官方脚本同源命令（tauri ios build + app-store-connect 导出）"
+          } >> "$GITHUB_STEP_SUMMARY"

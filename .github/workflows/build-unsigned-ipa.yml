@@ -54,6 +54,15 @@ jobs:
             npm run tauri -- ios init --ci
           fi
 
+      - name: 构建前端并同步 iOS 资源
+        working-directory: source
+        run: |
+          set -euo pipefail
+          npm run build
+          rm -rf src-tauri/gen/apple/assets
+          mkdir -p src-tauri/gen/apple/assets
+          cp -R dist/. src-tauri/gen/apple/assets/
+
       - name: 构建并打包未签名 IPA
         working-directory: source
         run: |
@@ -84,7 +93,7 @@ jobs:
             CODE_SIGNING_IDENTITY="" \
             clean build
 
-          APP_PATH="$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' -type d | head -n 1)"
+          APP_PATH="$(find build/DerivedData/Build/Products -maxdepth 2 -name '*.app' -type d | head -n 1)"
           if [ -z "${APP_PATH}" ]; then
             echo "未找到产物 .app。"
             exit 1

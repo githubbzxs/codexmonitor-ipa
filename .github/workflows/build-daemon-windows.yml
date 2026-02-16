@@ -1,0 +1,77 @@
+name: 构建Windows Daemon
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_repo:
+        description: 上游仓库（格式 owner/repo）
+        required: true
+        default: Dimillian/CodexMonitor
+      upstream_ref:
+        description: 上游分支或标签
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  build-daemon:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: 检出当前仓库
+        uses: actions/checkout@v4
+
+      - name: 克隆上游源码
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch "${{ github.event.inputs.upstream_ref }}" \
+            "https://github.com/${{ github.event.inputs.upstream_repo }}.git" source
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 Windows 原生依赖
+        shell: powershell
+        run: choco install cmake llvm -y --no-progress
+
+      - name: 配置 LLVM 环境变量
+        shell: powershell
+        run: |
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: 构建 codex_monitor_daemon.exe
+        shell: powershell
+        run: |
+          cargo build --release --bin codex_monitor_daemon --manifest-path source/src-tauri/Cargo.toml
+          if (-not (Test-Path "source/src-tauri/target/release/codex_monitor_daemon.exe")) {
+            Write-Error "未找到 codex_monitor_daemon.exe"
+          }
+
+      - name: 生成摘要与校验
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item "source/src-tauri/target/release/codex_monitor_daemon.exe" "out/codex_monitor_daemon.exe"
+          $hash = (Get-FileHash "out/codex_monitor_daemon.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  codex_monitor_daemon.exe" | Out-File -FilePath "out/codex_monitor_daemon.exe.sha256" -Encoding ascii
+          @(
+            "## Windows Daemon 构建完成"
+            ""
+            "- 产物：`codexmonitor-windows-daemon`"
+            "- 文件：`codex_monitor_daemon.exe`、`codex_monitor_daemon.exe.sha256`"
+            "- SHA256：`$hash`"
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexmonitor-windows-daemon
+          path: |
+            out/codex_monitor_daemon.exe
+            out/codex_monitor_daemon.exe.sha256
+          if-no-files-found: error

@@ -75,6 +75,7 @@ jobs:
             --manifest-path src-tauri/Cargo.toml \
             --target aarch64-apple-ios \
             --release \
+            --features custom-protocol \
             --lib
 
           LIB_PATH="src-tauri/target/aarch64-apple-ios/release/libcodex_monitor_lib.a"
